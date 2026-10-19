@@ -1,0 +1,64 @@
+name: Build Windows EXE
+
+on:
+  push:
+    branches: [main, master]
+    tags: ["v*"]
+  workflow_dispatch:
+
+# actions: write 用于清理旧 artifacts（避免占满 Actions 存储配额）
+# contents: write 用于 tag 时创建 Release
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python 3.8 (Win7-compatible)
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.8"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      # 构建前先清理：旧制品占满配额时会导致后面的上传失败
+      - name: Clean old artifacts (before build, keep newest 1)
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: ./scripts/clean-artifacts.ps1 -Keep 1
+
+      - name: Build with PyInstaller
+        run: pyinstaller --noconfirm MosquitoMonitorTool.spec
+
+      # 存储配额占满时上传会失败；不让它把整个构建标记为失败（配额会在 6-12 小时内重算，稍后重跑即可）
+      - name: Upload artifact
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: MosquitoMonitorTool-windows
+          path: dist/MosquitoMonitorTool.exe
+          if-no-files-found: error
+          retention-days: 3
+
+      - name: Create GitHub Release (on tags only)
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/MosquitoMonitorTool.exe
+
+      # 上传后再清一次：删掉本次构建之前遗留的旧制品与旧运行记录，
+      # 保证仓库里只剩最新 1 个制品、最新 1 条运行记录（进行中的运行不会被删）
+      - name: Clean old artifacts and runs (keep newest 1)
+        if: always()
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: ./scripts/clean-artifacts.ps1 -Keep 1 -KeepRuns 1
